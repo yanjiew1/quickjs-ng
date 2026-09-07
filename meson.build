@@ -134,6 +134,9 @@ m_dep = cc.find_library('m', required: false)
 qjs_sys_deps += m_dep
 qjs_sys_deps += dependency('threads', required: false)
 qjs_sys_deps += dependency('dl', required: false)
+if host_system == 'windows'
+  qjs_sys_deps += cc.find_library('bcrypt')
+endif
 
 qjs_srcs = files(
   'dtoa.c',
@@ -356,6 +359,9 @@ if meson.is_cross_build()
     dependency('threads', required: false, native: true),
     dependency('dl', required: false, native: true),
   ]
+  if build_machine.system() == 'windows'
+    qjs_sys_native_deps += native_cc.find_library('bcrypt')
+  endif
   qjs_native_lib = static_library(
     'qjs_native',
     qjs_srcs,

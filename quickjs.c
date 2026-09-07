@@ -2315,7 +2315,6 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
 {
     JSRuntime *rt;
     JSMallocState ms;
-    uint64_t random_state;
 
     memset(&ms, 0, sizeof(ms));
     ms.opaque = opaque;
@@ -2324,6 +2323,7 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     rt = mf->js_calloc(opaque, 1, sizeof(JSRuntime));
     if (!rt)
         return NULL;
+    js__get_random_bytes(&rt->hash_seed, sizeof(rt->hash_seed));
     rt->mf = *mf;
     if (!rt->mf.js_malloc_usable_size) {
         /* use dummy function if none provided */
@@ -2335,10 +2335,6 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     rt->malloc_state = ms;
     js_arena_init(rt);
     rt->malloc_gc_threshold = 256 * 1024;
-    random_state = js__gettimeofday_us();
-    if (random_state == 0)
-        random_state = 1;
-    rt->hash_seed = xorshift64star(&random_state);
 
     init_list_head(&rt->context_list);
     init_list_head(&rt->gc_obj_list);

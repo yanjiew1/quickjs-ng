@@ -35,6 +35,9 @@
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
+#if defined(__wasi__)
+#include <wasi/api.h>
+#endif
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,11 +62,16 @@ extern "C" {
 #elif defined(_WIN32)
 #include <winsock2.h>
 #include <windows.h>
+#include <bcrypt.h>
 #include <process.h> // _beginthread
 #endif
 #if !defined(_WIN32) && !defined(EMSCRIPTEN) && !defined(__wasi__) && !defined(__DJGPP)
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
+#endif
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <sys/random.h>
 #endif
 #if !defined(_WIN32)
 #include <limits.h>
@@ -603,6 +611,7 @@ static inline double uint64_as_float64(uint64_t u64)
 
 static inline int64_t js__gettimeofday_us(void);
 static inline uint64_t js__hrtime_ns(void);
+static inline int js__get_random_bytes(void *buf, size_t len);
 
 static inline size_t js__malloc_usable_size(const void *ptr)
 {
@@ -1614,6 +1623,95 @@ static inline int64_t js__gettimeofday_us(void) {
     gettimeofday(&tv, NULL);
 #endif
     return ((int64_t)tv.tv_sec * 1000000) + tv.tv_usec;
+}
+
+#if !defined(_WIN32) && !defined(EMSCRIPTEN) && \
+    !defined(__wasi__) && !defined(__DJGPP)
+static inline int js__get_random_device(uint8_t *buf, size_t len)
+{
+    int fd, flags = O_RDONLY;
+
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    fd = open("/dev/urandom", flags);
+    if (fd < 0)
+        return -1;
+    while (len != 0) {
+        ssize_t ret = read(fd, buf, len);
+
+        if (ret > 0) {
+            buf += ret;
+            len -= ret;
+        } else if (ret < 0 && errno == EINTR) {
+            continue;
+        } else {
+            close(fd);
+            return -1;
+        }
+    }
+    close(fd);
+    return 0;
+}
+#endif
+
+/* Fill a buffer from the operating system random number generator. */
+static inline int js__get_random_bytes(void *buf, size_t len)
+{
+    uint8_t *p = (uint8_t *)buf;
+
+#if defined(_WIN32)
+    while (len != 0) {
+        ULONG size = len > UINT32_MAX ? UINT32_MAX : (ULONG)len;
+
+        if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, p, size,
+                                            BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
+            return -1;
+        p += size;
+        len -= size;
+    }
+    return 0;
+#elif !defined(__wasi__) && !defined(__DJGPP) && \
+      (defined(__unix__) || defined(__unix) || defined(__APPLE__) || \
+       defined(__CYGWIN__) || defined(EMSCRIPTEN))
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
+    defined(__OpenBSD__) || defined(__DragonFly__)
+    arc4random_buf(p, len);
+    return 0;
+#elif defined(EMSCRIPTEN)
+    while (len != 0) {
+        size_t size = len > 256 ? 256 : len;
+
+        if (getentropy(p, size) != 0)
+            return -1;
+        p += size;
+        len -= size;
+    }
+    return 0;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    while (len != 0) {
+        ssize_t ret = getrandom(p, len, 0);
+
+        if (ret > 0) {
+            p += ret;
+            len -= ret;
+        } else if (ret < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+    return len == 0 ? 0 : js__get_random_device(p, len);
+#else
+    return js__get_random_device(p, len);
+#endif
+#elif defined(__wasi__)
+    return __wasi_random_get(p, len) == 0 ? 0 : -1;
+#else
+    (void)p;
+    (void)len;
+    return -1;
+#endif
 }
 
 #if defined(_WIN32)
