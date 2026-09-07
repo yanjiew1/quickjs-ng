@@ -656,7 +656,7 @@ typedef struct JSMapState {
     struct list_head records; /* list of JSMapRecord.link */
     uint32_t record_count;
     struct list_head *hash_table;
-    uint32_t hash_size; /* must be a power of two */
+    int hash_bits;
     uint32_t record_count_threshold; /* count at which a hash table
                                         resize is needed */
 } JSMapState;
@@ -1097,7 +1097,7 @@ typedef struct JSProperty {
 } JSProperty;
 
 #define JS_PROP_INITIAL_SIZE 2
-#define JS_PROP_INITIAL_HASH_SIZE 4 /* must be a power of two */
+#define JS_PROP_INITIAL_HASH_BITS 2
 
 typedef struct JSShapeProperty {
     uint32_t hash_next : 26; /* 0 if last in list */
@@ -1106,20 +1106,20 @@ typedef struct JSShapeProperty {
 } JSShapeProperty;
 
 struct JSShape {
-    /* hash table of size hash_mask + 1 before the start of the
+    /* hash table of size 1 << prop_hash_bits before the start of the
        structure (see prop_hash_end()). */
     JSGCObjectHeader header;
     /* true if the shape is inserted in the shape hash table. If not,
        JSShape.hash is not valid */
     uint8_t is_hashed;
     uint32_t hash; /* current hash value */
-    uint32_t prop_hash_mask;
+    int prop_hash_bits;
     int prop_size; /* allocated properties */
     int prop_count; /* include deleted properties */
     int deleted_prop_count;
     JSShape *shape_hash_next; /* in JSRuntime.shape_hash[h] list */
     JSObject *proto;
-    uint32_t hash_table[]; /* prop_hash_mask + 1 elements, then prop[prop_size] */
+    uint32_t hash_table[]; /* 1 << prop_hash_bits elements, then prop[prop_size] */
 };
 
 struct JSObject {
@@ -5563,29 +5563,28 @@ static JSValue JS_ConcatString(JSContext *ctx, JSValue op1, JSValue op2)
 
 /* Shape support */
 
-static inline size_t get_shape_size(size_t hash_size, size_t prop_size)
+static inline size_t get_shape_size(int hash_bits, size_t prop_size)
 {
-    return hash_size * sizeof(uint32_t) + sizeof(JSShape) +
+    return ((size_t)1 << hash_bits) * sizeof(uint32_t) + sizeof(JSShape) +
         prop_size * sizeof(JSShapeProperty);
 }
 
-static inline JSShape *get_shape_from_alloc(void *sh_alloc, size_t hash_size)
+static inline JSShape *get_shape_from_alloc(void *sh_alloc)
 {
-    (void)hash_size;
     return (JSShape *)sh_alloc; /* shape sits at the allocation start */
 }
 
 /* one-past-the-end of the hash bucket array; buckets are addressed as
-   prop_hash_end(sh)[-h - 1] for h in [0, prop_hash_mask], in BOTH layouts. */
+   prop_hash_end(sh)[-h - 1] for h in [0, 2^prop_hash_bits), in BOTH layouts. */
 static inline uint32_t *prop_hash_end(JSShape *sh)
 {
-    return sh->hash_table + sh->prop_hash_mask + 1;
+    return sh->hash_table + ((size_t)1 << sh->prop_hash_bits);
 }
 
 /* the JSShapeProperty array */
 static inline JSShapeProperty *get_shape_prop(JSShape *sh)
 {
-    return (JSShapeProperty *)(void *)(sh->hash_table + sh->prop_hash_mask + 1);
+    return (JSShapeProperty *)(void *)prop_hash_end(sh);
 }
 
 static inline void *get_alloc_from_shape(JSShape *sh)
@@ -5676,24 +5675,25 @@ static void js_shape_hash_unlink(JSRuntime *rt, JSShape *sh)
 
 /* create a new empty shape with prototype 'proto'. It is not hashed */
 static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
-                                           int hash_size, int prop_size)
+                                           int hash_bits, int prop_size)
 {
     JSRuntime *rt = ctx->rt;
     void *sh_alloc;
     JSShape *sh;
+    size_t hash_size = (size_t)1 << hash_bits;
 
-    sh_alloc = js_malloc(ctx, get_shape_size(hash_size, prop_size));
+    sh_alloc = js_malloc(ctx, get_shape_size(hash_bits, prop_size));
     if (!sh_alloc)
         return NULL;
-    sh = get_shape_from_alloc(sh_alloc, hash_size);
+    sh = get_shape_from_alloc(sh_alloc);
     JS_REF_COUNT(sh) = 1;
     add_gc_object(rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
     if (proto)
         js_dup(JS_MKPTR(JS_TAG_OBJECT, proto));
     sh->proto = proto;
-    /* prop_hash_mask must be set before prop_hash_end(sh) is used, as the hash
+    /* prop_hash_bits must be set before prop_hash_end(sh) is used, as the hash
        location depends on it in the merged-header layout. */
-    sh->prop_hash_mask = hash_size - 1;
+    sh->prop_hash_bits = hash_bits;
     memset(prop_hash_end(sh) - hash_size, 0, sizeof(prop_hash_end(sh)[0]) *
            hash_size);
     sh->prop_size = prop_size;
@@ -5705,7 +5705,7 @@ static inline JSShape *js_new_shape_nohash(JSContext *ctx, JSObject *proto,
 
 /* create a new empty shape with prototype 'proto' */
 static no_inline JSShape *js_new_shape2(JSContext *ctx, JSObject *proto,
-                                        int hash_size, int prop_size)
+                                        int hash_bits, int prop_size)
 {
     JSRuntime *rt = ctx->rt;
     JSShape *sh;
@@ -5715,7 +5715,7 @@ static no_inline JSShape *js_new_shape2(JSContext *ctx, JSObject *proto,
         resize_shape_hash(rt, rt->shape_hash_bits + 1);
     }
 
-    sh = js_new_shape_nohash(ctx, proto, hash_size, prop_size);
+    sh = js_new_shape_nohash(ctx, proto, hash_bits, prop_size);
     if (!sh)
         return NULL;
 
@@ -5728,7 +5728,7 @@ static no_inline JSShape *js_new_shape2(JSContext *ctx, JSObject *proto,
 
 static JSShape *js_new_shape(JSContext *ctx, JSObject *proto)
 {
-    return js_new_shape2(ctx, proto, JS_PROP_INITIAL_HASH_SIZE,
+    return js_new_shape2(ctx, proto, JS_PROP_INITIAL_HASH_BITS,
                          JS_PROP_INITIAL_SIZE);
 }
 
@@ -5747,7 +5747,7 @@ static JSShape *js_new_shape_with2(JSContext *ctx, JSObject *proto,
     JSShape *sh;
     int i;
 
-    sh = js_new_shape2(ctx, proto, JS_PROP_INITIAL_HASH_SIZE, prop_count);
+    sh = js_new_shape2(ctx, proto, JS_PROP_INITIAL_HASH_BITS, prop_count);
     if (sh)
         for (i = 0; i < prop_count; i++)
             if (add_shape_property(ctx, &sh, NULL, props[i].atom, props[i].flags))
@@ -5774,16 +5774,17 @@ static JSShape *js_clone_shape(JSContext *ctx, JSShape *sh1)
     void *sh_alloc, *sh_alloc1;
     size_t size;
     JSShapeProperty *pr;
-    uint32_t i, hash_size;
+    uint32_t i;
+    int hash_bits;
 
-    hash_size = sh1->prop_hash_mask + 1;
-    size = get_shape_size(hash_size, sh1->prop_size);
+    hash_bits = sh1->prop_hash_bits;
+    size = get_shape_size(hash_bits, sh1->prop_size);
     sh_alloc = js_malloc(ctx, size);
     if (!sh_alloc)
         return NULL;
     sh_alloc1 = get_alloc_from_shape(sh1);
     memcpy(sh_alloc, sh_alloc1, size);
-    sh = get_shape_from_alloc(sh_alloc, hash_size);
+    sh = get_shape_from_alloc(sh_alloc);
     JS_REF_COUNT(sh) = 1;
     add_gc_object(ctx->rt, &sh->header, JS_GC_OBJ_TYPE_SHAPE);
     sh->is_hashed = false;
@@ -5840,7 +5841,8 @@ static no_inline int resize_properties(JSContext *ctx, JSShape **psh,
                                        JSObject *p, uint32_t count)
 {
     JSShape *sh;
-    uint32_t new_size, new_hash_size, new_hash_mask, i;
+    uint32_t new_size, i;
+    int new_hash_bits;
     JSShapeProperty *pr;
     void *sh_alloc;
     intptr_t h;
@@ -5856,17 +5858,18 @@ static no_inline int resize_properties(JSContext *ctx, JSShape **psh,
             return -1;
         p->prop = new_prop;
     }
-    new_hash_size = sh->prop_hash_mask + 1;
-    while (new_hash_size < new_size)
-        new_hash_size = 2 * new_hash_size;
-    if (new_hash_size != (sh->prop_hash_mask + 1)) {
+    new_hash_bits = sh->prop_hash_bits;
+    while (((uint32_t)1 << new_hash_bits) < new_size)
+        new_hash_bits++;
+    if (new_hash_bits != sh->prop_hash_bits) {
         JSShape *old_sh;
+        size_t new_hash_size = (size_t)1 << new_hash_bits;
         /* resize the hash table and the properties */
         old_sh = sh;
-        sh_alloc = js_malloc(ctx, get_shape_size(new_hash_size, new_size));
+        sh_alloc = js_malloc(ctx, get_shape_size(new_hash_bits, new_size));
         if (!sh_alloc)
             return -1;
-        sh = get_shape_from_alloc(sh_alloc, new_hash_size);
+        sh = get_shape_from_alloc(sh_alloc);
         list_del(&old_sh->header.link);
         /* copy the shape header, then the properties. Their location relative
            to the struct differs by layout, so copy via get_shape_prop(). */
@@ -5877,15 +5880,14 @@ static no_inline int resize_properties(JSContext *ctx, JSShape **psh,
         JS_REF_COUNT(sh) = JS_REF_COUNT(old_sh);
         JS_GC_TYPE(sh) = JS_GC_TYPE(old_sh);
         JS_GC_MARK(sh) = JS_GC_MARK(old_sh);
-        new_hash_mask = new_hash_size - 1;
-        sh->prop_hash_mask = new_hash_mask;
+        sh->prop_hash_bits = new_hash_bits;
         memcpy(get_shape_prop(sh), get_shape_prop(old_sh),
                sizeof(JSShapeProperty) * old_sh->prop_count);
         memset(prop_hash_end(sh) - new_hash_size, 0,
                sizeof(prop_hash_end(sh)[0]) * new_hash_size);
         for(i = 0, pr = get_shape_prop(sh); i < sh->prop_count; i++, pr++) {
             if (pr->atom != JS_ATOM_NULL) {
-                h = ((uintptr_t)pr->atom & new_hash_mask);
+                h = pr->atom & (((uint32_t)1 << new_hash_bits) - 1);
                 pr->hash_next = prop_hash_end(sh)[-h - 1];
                 prop_hash_end(sh)[-h - 1] = i + 1;
             }
@@ -5895,13 +5897,13 @@ static no_inline int resize_properties(JSContext *ctx, JSShape **psh,
         /* only resize the properties */
         list_del(&sh->header.link);
         sh_alloc = js_realloc(ctx, get_alloc_from_shape(sh),
-                              get_shape_size(new_hash_size, new_size));
+                              get_shape_size(new_hash_bits, new_size));
         if (unlikely(!sh_alloc)) {
             /* insert again in the GC list */
             list_add_tail(&sh->header.link, &ctx->rt->gc_obj_list);
             return -1;
         }
-        sh = get_shape_from_alloc(sh_alloc, new_hash_size);
+        sh = get_shape_from_alloc(sh_alloc);
         list_add_tail(&sh->header.link, &ctx->rt->gc_obj_list);
     }
     *psh = sh;
@@ -5915,7 +5917,9 @@ static int compact_properties(JSContext *ctx, JSObject *p)
     JSShape *sh, *old_sh;
     void *sh_alloc;
     intptr_t h;
-    uint32_t new_hash_size, i, j, new_hash_mask, new_size;
+    uint32_t i, j, new_size;
+    int new_hash_bits;
+    size_t new_hash_size;
     JSShapeProperty *old_pr, *pr;
     JSProperty *prop, *new_prop;
 
@@ -5926,17 +5930,16 @@ static int compact_properties(JSContext *ctx, JSObject *p)
                        sh->prop_count - sh->deleted_prop_count);
     assert(new_size <= sh->prop_size);
 
-    new_hash_size = sh->prop_hash_mask + 1;
-    while ((new_hash_size / 2) >= new_size)
-        new_hash_size = new_hash_size / 2;
-    new_hash_mask = new_hash_size - 1;
+    new_hash_bits = sh->prop_hash_bits;
+    while (((uint32_t)1 << (new_hash_bits - 1)) >= new_size)
+        new_hash_bits--;
 
     /* resize the hash table and the properties */
     old_sh = sh;
-    sh_alloc = js_malloc(ctx, get_shape_size(new_hash_size, new_size));
+    sh_alloc = js_malloc(ctx, get_shape_size(new_hash_bits, new_size));
     if (!sh_alloc)
         return -1;
-    sh = get_shape_from_alloc(sh_alloc, new_hash_size);
+    sh = get_shape_from_alloc(sh_alloc);
     list_del(&old_sh->header.link);
     memcpy(sh, old_sh, sizeof(JSShape));
     list_add_tail(&sh->header.link, &ctx->rt->gc_obj_list);
@@ -5946,9 +5949,10 @@ static int compact_properties(JSContext *ctx, JSObject *p)
     JS_GC_TYPE(sh) = JS_GC_TYPE(old_sh);
     JS_GC_MARK(sh) = JS_GC_MARK(old_sh);
 
-    /* set the new hash mask before prop_hash_end()/get_shape_prop() are used,
+    /* set the new hash bits before prop_hash_end()/get_shape_prop() are used,
        as their locations depend on it in the merged-header layout */
-    sh->prop_hash_mask = new_hash_mask;
+    sh->prop_hash_bits = new_hash_bits;
+    new_hash_size = (size_t)1 << new_hash_bits;
     memset(prop_hash_end(sh) - new_hash_size, 0,
            sizeof(prop_hash_end(sh)[0]) * new_hash_size);
 
@@ -5960,7 +5964,7 @@ static int compact_properties(JSContext *ctx, JSObject *p)
         if (old_pr->atom != JS_ATOM_NULL) {
             pr->atom = old_pr->atom;
             pr->flags = old_pr->flags;
-            h = ((uintptr_t)old_pr->atom & new_hash_mask);
+            h = old_pr->atom & (((uint32_t)1 << new_hash_bits) - 1);
             pr->hash_next = prop_hash_end(sh)[-h - 1];
             prop_hash_end(sh)[-h - 1] = j + 1;
             prop[j] = prop[i];
@@ -5970,7 +5974,7 @@ static int compact_properties(JSContext *ctx, JSObject *p)
         old_pr++;
     }
     assert(j == (sh->prop_count - sh->deleted_prop_count));
-    sh->prop_hash_mask = new_hash_mask;
+    sh->prop_hash_bits = new_hash_bits;
     sh->prop_size = new_size;
     sh->deleted_prop_count = 0;
     sh->prop_count = j;
@@ -5991,7 +5995,8 @@ static int add_shape_property(JSContext *ctx, JSShape **psh,
     JSRuntime *rt = ctx->rt;
     JSShape *sh = *psh;
     JSShapeProperty *pr, *prop;
-    uint32_t hash_mask, new_shape_hash = 0;
+    uint32_t new_shape_hash = 0;
+    int hash_bits;
     intptr_t h;
 
     /* update the shape hash */
@@ -6021,8 +6026,8 @@ static int add_shape_property(JSContext *ctx, JSShape **psh,
     pr->atom = JS_DupAtom(ctx, atom);
     pr->flags = prop_flags;
     /* add in hash table */
-    hash_mask = sh->prop_hash_mask;
-    h = atom & hash_mask;
+    hash_bits = sh->prop_hash_bits;
+    h = atom & (((uint32_t)1 << hash_bits) - 1);
     pr->hash_next = prop_hash_end(sh)[-h - 1];
     prop_hash_end(sh)[-h - 1] = sh->prop_count;
     return 0;
@@ -6272,17 +6277,16 @@ static JSValue JS_NewObjectProtoClassAlloc(JSContext *ctx, JSValueConst proto_va
 {
     JSShape *sh;
     JSObject *proto;
-    int hash_size, hash_bits;
+    int hash_bits;
 
     if (n_alloc_props <= JS_PROP_INITIAL_SIZE) {
         n_alloc_props = JS_PROP_INITIAL_SIZE;
-        hash_size = JS_PROP_INITIAL_HASH_SIZE;
+        hash_bits = JS_PROP_INITIAL_HASH_BITS;
     } else {
         hash_bits = 32 - clz32(n_alloc_props - 1); /* ceil(log2(radix)) */
-        hash_size = 1 << hash_bits;
     }
     proto = object_or_null(proto_val);
-    sh = js_new_shape_nohash(ctx, proto, hash_size, n_alloc_props);
+    sh = js_new_shape_nohash(ctx, proto, hash_bits, n_alloc_props);
     if (!sh)
         return JS_EXCEPTION;
     return JS_NewObjectFromShape(ctx, sh, class_id, NULL);
@@ -6814,7 +6818,7 @@ static inline JSShapeProperty *find_own_property1(JSObject *p, JSAtom atom)
     JSShapeProperty *pr, *prop;
     intptr_t h;
     sh = p->shape;
-    h = (uintptr_t)atom & sh->prop_hash_mask;
+    h = atom & (((uint32_t)1 << sh->prop_hash_bits) - 1);
     h = prop_hash_end(sh)[-h - 1];
     prop = get_shape_prop(sh);
     while (h) {
@@ -6835,7 +6839,7 @@ static inline JSShapeProperty *find_own_property(JSProperty **ppr,
     JSShapeProperty *pr, *prop;
     intptr_t h;
     sh = p->shape;
-    h = (uintptr_t)atom & sh->prop_hash_mask;
+    h = atom & (((uint32_t)1 << sh->prop_hash_bits) - 1);
     h = prop_hash_end(sh)[-h - 1];
     prop = get_shape_prop(sh);
     while (h) {
@@ -7595,9 +7599,8 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
 
         /* the hashed shapes are counted separately */
         if (sh && !sh->is_hashed) {
-            int hash_size = sh->prop_hash_mask + 1;
             s->shape_count++;
-            s->shape_size += get_shape_size(hash_size, sh->prop_size);
+            s->shape_size += get_shape_size(sh->prop_hash_bits, sh->prop_size);
         }
         list_for_each(el1, &ctx->loaded_modules) {
             JSModuleDef *m = list_entry(el1, JSModuleDef, link);
@@ -7663,9 +7666,8 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
         }
         /* the hashed shapes are counted separately */
         if (!sh->is_hashed) {
-            int hash_size = sh->prop_hash_mask + 1;
             s->shape_count++;
-            s->shape_size += get_shape_size(hash_size, sh->prop_size);
+            s->shape_size += get_shape_size(sh->prop_hash_bits, sh->prop_size);
         }
 
         switch(p->class_id) {
@@ -7828,9 +7830,8 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
     for(i = 0; i < rt->shape_hash_size; i++) {
         JSShape *sh;
         for(sh = rt->shape_hash[i]; sh != NULL; sh = sh->shape_hash_next) {
-            int hash_size = sh->prop_hash_mask + 1;
             s->shape_count++;
-            s->shape_size += get_shape_size(hash_size, sh->prop_size);
+            s->shape_size += get_shape_size(sh->prop_hash_bits, sh->prop_size);
         }
     }
 
@@ -10241,7 +10242,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
 
  redo:
     sh = p->shape;
-    h1 = atom & sh->prop_hash_mask;
+    h1 = atom & (((uint32_t)1 << sh->prop_hash_bits) - 1);
     h = prop_hash_end(sh)[-h1 - 1];
     prop = get_shape_prop(sh);
     lpr = NULL;
@@ -50822,7 +50823,7 @@ int JS_AddIntrinsicRegExp(JSContext *ctx)
 
 typedef struct {
     int count;
-    uint32_t hash_size;
+    int hash_bits;
     struct JSONParseRecordEntry *entries;
     uint32_t *hash_table;
 } JSONParseRecordObject;
@@ -50854,7 +50855,7 @@ static void json_parse_record_init_obj(JSContext *ctx, JSONParseRecord *pr, JSVa
     pr->u.obj.count = 0;
     pr->u.obj.entries = NULL;
     pr->u.obj.hash_table = NULL;
-    pr->u.obj.hash_size = 0;
+    pr->u.obj.hash_bits = 0;
 }
 
 static void json_parse_record_init_array(JSContext *ctx, JSONParseRecord *pr, JSValueConst val)
@@ -50872,9 +50873,12 @@ static void json_parse_record_init_primitive(JSContext *ctx, JSONParseRecord *pr
     pr->u.primitive.source_len = source_len;
 }
 
-static int json_parse_record_resize_hash(JSContext *ctx, JSONParseRecordObject *po, uint32_t new_hash_size)
+static int json_parse_record_resize_hash(JSContext *ctx,
+                                         JSONParseRecordObject *po,
+                                         int new_hash_bits)
 {
     uint32_t i, h, *new_hash_table;
+    size_t new_hash_size = (size_t)1 << new_hash_bits;
     JSONParseRecordEntry *e;
 
     new_hash_table = js_malloc(ctx, sizeof(new_hash_table[0]) * new_hash_size);
@@ -50882,14 +50886,14 @@ static int json_parse_record_resize_hash(JSContext *ctx, JSONParseRecordObject *
         return -1;
     js_free(ctx, po->hash_table);
     po->hash_table = new_hash_table;
-    po->hash_size = new_hash_size;
+    po->hash_bits = new_hash_bits;
 
-    for(i = 0; i < po->hash_size; i++) {
+    for(i = 0; i < new_hash_size; i++) {
         po->hash_table[i] = -1;
     }
     for(i = 0; i < po->count; i++) {
         e = &po->entries[i];
-        h = e->atom & (po->hash_size - 1);
+        h = e->atom & (((uint32_t)1 << po->hash_bits) - 1);
         e->hash_next = po->hash_table[h];
         po->hash_table[h] = i;
     }
@@ -50908,9 +50912,10 @@ static JSONParseRecord *json_parse_record_add(JSContext *ctx, JSONParseRecord *p
         return NULL;
     }
     /* switch to hash table when going over size threshold */
-    if (po->count >= 8 && (po->count + 1) > po->hash_size) {
+    if (po->count >= 8 &&
+        (po->count + 1) > ((uint32_t)1 << po->hash_bits)) {
         int hash_bits = 32 - clz32(po->count);
-        if (json_parse_record_resize_hash(ctx, po, 1 << hash_bits))
+        if (json_parse_record_resize_hash(ctx, po, hash_bits))
             return NULL;
     }
 
@@ -50918,8 +50923,8 @@ static JSONParseRecord *json_parse_record_add(JSContext *ctx, JSONParseRecord *p
     e->atom = JS_DupAtom(ctx, key);
     pr1 = &e->parse_record;
     pr1->value = JS_UNDEFINED;
-    if (po->hash_size != 0) {
-        h = key & (po->hash_size - 1);
+    if (po->hash_bits != 0) {
+        h = key & (((uint32_t)1 << po->hash_bits) - 1);
         e->hash_next = po->hash_table[h];
         po->hash_table[h] = po->count - 1;
     }
@@ -50932,13 +50937,13 @@ static JSONParseRecord *json_parse_record_find(JSONParseRecord *pr, JSAtom key)
     JSONParseRecordEntry *e;
     uint32_t h, i;
 
-    if (po->hash_size == 0) {
+    if (po->hash_bits == 0) {
         for(i = 0; i < po->count; i++) {
             if (po->entries[i].atom == key)
                 return &po->entries[i].parse_record;
         }
     } else {
-        h = key & (po->hash_size - 1);
+        h = key & (((uint32_t)1 << po->hash_bits) - 1);
         i = po->hash_table[h];
         while (i != -1) {
             e = &po->entries[i];
@@ -53214,8 +53219,8 @@ static JSValue js_map_constructor(JSContext *ctx, JSValueConst new_target,
     init_list_head(&s->records);
     s->is_weak = is_weak;
     JS_SetOpaqueInternal(obj, s);
-    s->hash_size = 1;
-    s->hash_table = js_malloc(ctx, sizeof(s->hash_table[0]) * s->hash_size);
+    s->hash_bits = 0;
+    s->hash_table = js_malloc(ctx, sizeof(s->hash_table[0]));
     if (!s->hash_table)
         goto fail;
     init_list_head(&s->hash_table[0]);
@@ -53319,7 +53324,6 @@ static JSValueConst map_normalize_key_const(JSContext *ctx, JSValueConst key)
     return safe_const(map_normalize_key(ctx, unsafe_unconst(key)));
 }
 
-/* XXX: better hash ? */
 static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
 {
     uint32_t tag = JS_VALUE_GET_NORM_TAG(key);
@@ -53375,7 +53379,7 @@ static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
     struct list_head *el;
     JSMapRecord *mr;
     uint32_t h;
-    h = map_hash_key(ctx, key) & (s->hash_size - 1);
+    h = map_hash_key(ctx, key) & (((uint32_t)1 << s->hash_bits) - 1);
     list_for_each(el, &s->hash_table[h]) {
         mr = list_entry(el, JSMapRecord, hash_link);
         if (js_same_value_zero(ctx, mr->key, key))
@@ -53387,14 +53391,16 @@ static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
 static void map_hash_resize(JSContext *ctx, JSMapState *s)
 {
     uint32_t new_hash_size, i, h;
+    int new_hash_bits;
     struct list_head *new_hash_table, *el;
     JSMapRecord *mr;
 
     /* XXX: no reporting of memory allocation failure */
-    if (s->hash_size == 1)
-        new_hash_size = 4;
+    if (s->hash_bits == 0)
+        new_hash_bits = 2;
     else
-        new_hash_size = s->hash_size * 2;
+        new_hash_bits = s->hash_bits + 1;
+    new_hash_size = (uint32_t)1 << new_hash_bits;
     new_hash_table = js_realloc(ctx, s->hash_table,
                                 sizeof(new_hash_table[0]) * new_hash_size);
     if (!new_hash_table)
@@ -53411,7 +53417,7 @@ static void map_hash_resize(JSContext *ctx, JSMapState *s)
         }
     }
     s->hash_table = new_hash_table;
-    s->hash_size = new_hash_size;
+    s->hash_bits = new_hash_bits;
     s->record_count_threshold = new_hash_size * 2;
 }
 
@@ -53461,7 +53467,7 @@ static JSMapRecord *map_add_record(JSContext *ctx, JSMapState *s,
     } else {
         mr->key = js_dup(key);
     }
-    h = map_hash_key(ctx, key) & (s->hash_size - 1);
+    h = map_hash_key(ctx, key) & (((uint32_t)1 << s->hash_bits) - 1);
     list_add_tail(&mr->hash_link, &s->hash_table[h]);
     list_add_tail(&mr->link, &s->records);
     s->record_count++;
