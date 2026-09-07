@@ -602,7 +602,6 @@ struct JSContext {
     double time_origin;
 
     uint64_t random_state;
-    uint32_t hash_seed;
 
     /* when the counter reaches zero, JSRutime.interrupt_handler is called */
     int interrupt_counter;
@@ -2886,7 +2885,6 @@ JSContext *JS_NewContextRaw(JSRuntime *rt)
     // the state must be non zero
     if (ctx->random_state == 0)
         ctx->random_state = 1;
-    ctx->hash_seed = xorshift64star(&ctx->random_state);
 
     if (JS_AddIntrinsicBasicObjects(ctx)) {
         JS_FreeContext(ctx);
@@ -3169,6 +3167,29 @@ static inline bool __JS_AtomIsConst(JSAtom v)
 static inline bool __JS_AtomIsTaggedInt(JSAtom v)
 {
     return (v & JS_ATOM_TAG_INT) != 0;
+}
+
+static inline uint32_t map_hash32(uint32_t input, int hash_bits)
+{
+    if (hash_bits == 0)
+        return 0;
+    return hash32(input) >> (32 - hash_bits);
+}
+
+static inline uint32_t map_hash64(uint64_t input, int hash_bits)
+{
+    if (hash_bits == 0)
+        return 0;
+    return hash64(input) >> (64 - hash_bits);
+}
+
+static inline uint32_t map_hash_pointer(uintptr_t input, int hash_bits)
+{
+#if UINTPTR_MAX > UINT32_MAX
+    return map_hash64(input, hash_bits);
+#else
+    return map_hash32(input, hash_bits);
+#endif
 }
 
 static inline JSAtom __JS_AtomFromUInt32(uint32_t v)
@@ -5888,7 +5909,7 @@ static no_inline int resize_properties(JSContext *ctx, JSShape **psh,
                sizeof(prop_hash_end(sh)[0]) * new_hash_size);
         for(i = 0, pr = get_shape_prop(sh); i < sh->prop_count; i++, pr++) {
             if (pr->atom != JS_ATOM_NULL) {
-                h = pr->atom & (new_hash_size - 1);
+                h = map_hash32(pr->atom, new_hash_bits);
                 pr->hash_next = prop_hash_end(sh)[-h - 1];
                 prop_hash_end(sh)[-h - 1] = i + 1;
             }
@@ -5967,7 +5988,7 @@ static int compact_properties(JSContext *ctx, JSObject *p)
         if (old_pr->atom != JS_ATOM_NULL) {
             pr->atom = old_pr->atom;
             pr->flags = old_pr->flags;
-            h = old_pr->atom & (new_hash_size - 1);
+            h = map_hash32(old_pr->atom, new_hash_bits);
             pr->hash_next = prop_hash_end(sh)[-h - 1];
             prop_hash_end(sh)[-h - 1] = j + 1;
             prop[j] = prop[i];
@@ -6027,7 +6048,7 @@ static int add_shape_property(JSContext *ctx, JSShape **psh,
     pr->atom = JS_DupAtom(ctx, atom);
     pr->flags = prop_flags;
     /* add in hash table */
-    h = atom & (sh->prop_hash_size - 1);
+    h = map_hash32(atom, sh->prop_hash_bits);
     pr->hash_next = prop_hash_end(sh)[-h - 1];
     prop_hash_end(sh)[-h - 1] = sh->prop_count;
     return 0;
@@ -6818,7 +6839,7 @@ static inline JSShapeProperty *find_own_property1(JSObject *p, JSAtom atom)
     JSShapeProperty *pr, *prop;
     intptr_t h;
     sh = p->shape;
-    h = atom & (sh->prop_hash_size - 1);
+    h = map_hash32(atom, sh->prop_hash_bits);
     h = prop_hash_end(sh)[-h - 1];
     prop = get_shape_prop(sh);
     while (h) {
@@ -6839,7 +6860,7 @@ static inline JSShapeProperty *find_own_property(JSProperty **ppr,
     JSShapeProperty *pr, *prop;
     intptr_t h;
     sh = p->shape;
-    h = atom & (sh->prop_hash_size - 1);
+    h = map_hash32(atom, sh->prop_hash_bits);
     h = prop_hash_end(sh)[-h - 1];
     prop = get_shape_prop(sh);
     while (h) {
@@ -10242,7 +10263,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
 
  redo:
     sh = p->shape;
-    h1 = atom & (sh->prop_hash_size - 1);
+    h1 = map_hash32(atom, sh->prop_hash_bits);
     h = prop_hash_end(sh)[-h1 - 1];
     prop = get_shape_prop(sh);
     lpr = NULL;
@@ -50893,7 +50914,7 @@ static int json_parse_record_resize_hash(JSContext *ctx,
     }
     for(i = 0; i < po->count; i++) {
         e = &po->entries[i];
-        h = e->atom & (((uint32_t)1 << po->hash_bits) - 1);
+        h = map_hash32(e->atom, po->hash_bits);
         e->hash_next = po->hash_table[h];
         po->hash_table[h] = i;
     }
@@ -50924,7 +50945,7 @@ static JSONParseRecord *json_parse_record_add(JSContext *ctx, JSONParseRecord *p
     pr1 = &e->parse_record;
     pr1->value = JS_UNDEFINED;
     if (po->hash_bits != 0) {
-        h = key & (((uint32_t)1 << po->hash_bits) - 1);
+        h = map_hash32(key, po->hash_bits);
         e->hash_next = po->hash_table[h];
         po->hash_table[h] = po->count - 1;
     }
@@ -50943,7 +50964,7 @@ static JSONParseRecord *json_parse_record_find(JSONParseRecord *pr, JSAtom key)
                 return &po->entries[i].parse_record;
         }
     } else {
-        h = key & (((uint32_t)1 << po->hash_bits) - 1);
+        h = map_hash32(key, po->hash_bits);
         i = po->hash_table[h];
         while (i != -1) {
             e = &po->entries[i];
@@ -53219,11 +53240,12 @@ static JSValue js_map_constructor(JSContext *ctx, JSValueConst new_target,
     init_list_head(&s->records);
     s->is_weak = is_weak;
     JS_SetOpaqueInternal(obj, s);
-    s->hash_bits = 0;
-    s->hash_table = js_malloc(ctx, sizeof(s->hash_table[0]));
+    s->hash_bits = 1;
+    s->hash_table = js_malloc(ctx, sizeof(s->hash_table[0]) * 2);
     if (!s->hash_table)
         goto fail;
     init_list_head(&s->hash_table[0]);
+    init_list_head(&s->hash_table[1]);
     s->record_count_threshold = 4;
 
     arr = JS_UNDEFINED;
@@ -53324,37 +53346,46 @@ static JSValueConst map_normalize_key_const(JSContext *ctx, JSValueConst key)
     return safe_const(map_normalize_key(ctx, unsafe_unconst(key)));
 }
 
-static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
+static uint32_t map_hash_key(JSValueConst key, int hash_bits)
 {
     uint32_t tag = JS_VALUE_GET_NORM_TAG(key);
     uint32_t h;
     double d;
-    JSFloat64Union u;
-    JSBigInt *r;
+    JSBigInt *p;
+    JSBigIntBuf buf;
 
     switch(tag) {
     case JS_TAG_BOOL:
-        h = JS_VALUE_GET_INT(key);
+        h = map_hash32(JS_VALUE_GET_INT(key) ^ JS_TAG_BOOL, hash_bits);
         break;
     case JS_TAG_STRING:
-        h = hash_string(JS_VALUE_GET_STRING(key), 0);
+        h = map_hash32(hash_string(JS_VALUE_GET_STRING(key), 0) ^ JS_TAG_STRING,
+                       hash_bits);
         break;
     case JS_TAG_STRING_ROPE:
-        h = hash_string_rope(key, 0);
+        h = map_hash32(hash_string_rope(key, 0) ^ JS_TAG_STRING, hash_bits);
         break;
     case JS_TAG_OBJECT:
     case JS_TAG_SYMBOL:
-        h = (uintptr_t)JS_VALUE_GET_PTR(key) * 3163;
+        h = map_hash_pointer((uintptr_t)JS_VALUE_GET_PTR(key) ^ tag,
+                             hash_bits);
         break;
     case JS_TAG_INT:
         d = JS_VALUE_GET_INT(key);
         goto hash_float64;
     case JS_TAG_SHORT_BIG_INT:
-        d = JS_VALUE_GET_SHORT_BIG_INT(key);
-        goto hash_float64;
+        p = js_bigint_set_short(&buf, key);
+        goto hash_bigint;
     case JS_TAG_BIG_INT:
-        r = JS_VALUE_GET_PTR(key);
-        h = hash_string8((void *)r->tab, r->len * sizeof(*r->tab), 0);
+        p = JS_VALUE_GET_PTR(key);
+    hash_bigint:
+        {
+            int i;
+            h = 1;
+            for(i = p->len - 1; i >= 0; i--)
+                h = h * 263 + p->tab[i];
+            h = map_hash32(h ^ JS_TAG_BIG_INT, hash_bits);
+        }
         break;
     case JS_TAG_FLOAT64:
         d = JS_VALUE_GET_FLOAT64(key);
@@ -53362,15 +53393,13 @@ static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
         if (isnan(d))
             d = NAN;
     hash_float64:
-        u.d = d;
-        h = (u.u32[0] ^ u.u32[1]) * 3163;
-        tag = JS_TAG_FLOAT64;
+        h = map_hash64(float64_as_uint64(d) ^ JS_TAG_FLOAT64, hash_bits);
         break;
     default:
-        h = 0;
+        h = map_hash32(tag, hash_bits);
         break;
     }
-    return h ^ ctx->hash_seed ^ hash32(tag);
+    return h;
 }
 
 static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
@@ -53379,7 +53408,7 @@ static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
     struct list_head *el;
     JSMapRecord *mr;
     uint32_t h;
-    h = map_hash_key(ctx, key) & (((uint32_t)1 << s->hash_bits) - 1);
+    h = map_hash_key(key, s->hash_bits);
     list_for_each(el, &s->hash_table[h]) {
         mr = list_entry(el, JSMapRecord, hash_link);
         if (js_same_value_zero(ctx, mr->key, key))
@@ -53396,10 +53425,7 @@ static void map_hash_resize(JSContext *ctx, JSMapState *s)
     JSMapRecord *mr;
 
     /* XXX: no reporting of memory allocation failure */
-    if (s->hash_bits == 0)
-        new_hash_bits = 2;
-    else
-        new_hash_bits = s->hash_bits + 1;
+    new_hash_bits = min_int(s->hash_bits + 1, 31);
     new_hash_size = (uint32_t)1 << new_hash_bits;
     new_hash_table = js_realloc(ctx, s->hash_table,
                                 sizeof(new_hash_table[0]) * new_hash_size);
@@ -53412,7 +53438,7 @@ static void map_hash_resize(JSContext *ctx, JSMapState *s)
     list_for_each(el, &s->records) {
         mr = list_entry(el, JSMapRecord, link);
         if (!mr->empty) {
-            h = map_hash_key(ctx, mr->key) & (new_hash_size - 1);
+            h = map_hash_key(mr->key, new_hash_bits);
             list_add_tail(&mr->hash_link, &new_hash_table[h]);
         }
     }
@@ -53467,7 +53493,7 @@ static JSMapRecord *map_add_record(JSContext *ctx, JSMapState *s,
     } else {
         mr->key = js_dup(key);
     }
-    h = map_hash_key(ctx, key) & (((uint32_t)1 << s->hash_bits) - 1);
+    h = map_hash_key(key, s->hash_bits);
     list_add_tail(&mr->hash_link, &s->hash_table[h]);
     list_add_tail(&mr->link, &s->records);
     s->record_count++;

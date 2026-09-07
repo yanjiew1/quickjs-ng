@@ -206,6 +206,12 @@ static inline uint32_t hash32(uint32_t a)
     return a * 0x61c88647;
 }
 
+static inline uint64_t hash64(uint64_t a)
+{
+    /* 64-bit Linux-style negative golden-ratio multiplier. */
+    return a * UINT64_C(0x61c8864680b583eb);
+}
+
 /* WARNING: undefined if a = 0 */
 static inline int clz32(unsigned int a)
 {
