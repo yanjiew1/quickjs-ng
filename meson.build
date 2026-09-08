@@ -136,18 +136,19 @@ qjs_sys_deps += dependency('threads', required: false)
 qjs_sys_deps += dependency('dl', required: false)
 
 qjs_srcs = files(
-  'dtoa.c',
-  'libregexp.c',
-  'libunicode.c',
-  'quickjs.c',
+  'src/dtoa.c',
+  'src/libregexp.c',
+  'src/libunicode.c',
+  'src/quickjs.c',
+  'src/quickjs-version.c',
 )
 qjs_hdrs = files(
-  'quickjs.h',
+  'src/quickjs.h',
 )
 
 qjs_libc = get_option('libc')
-qjs_libc_srcs = files('quickjs-libc.c')
-qjs_libc_hdrs = files('quickjs-libc.h')
+qjs_libc_srcs = files('src/quickjs-libc.c')
+qjs_libc_hdrs = files('src/quickjs-libc.h')
 
 if qjs_libc
   qjs_hdrs += qjs_libc_hdrs
@@ -199,19 +200,19 @@ qjs_dep = declare_dependency(
   compile_args: qjs_dep_args,
   link_with: qjs_lib,
   dependencies: qjs_sys_deps,
-  include_directories: include_directories('.'),
+  include_directories: include_directories('src'),
   variables: qjs_export_variables,
 )
 
 if host_system != 'windows'
   qjs_module_dep = declare_dependency(
     compile_args: [qjs_dep_args, '-DQUICKJS_NG_MODULE_BUILD'],
-    include_directories: include_directories('.'),
+    include_directories: include_directories('src'),
   )
 else
   qjs_module_dep = declare_dependency(
     compile_args: [qjs_dep_args, '-DQUICKJS_NG_MODULE_BUILD'],
-    include_directories: include_directories('.'),
+    include_directories: include_directories('src'),
     # Windows can't resolve symbols at runtime thus we explicitly link to qjs.
     dependencies: qjs_dep,
   )
@@ -219,7 +220,7 @@ endif
 
 if qjs_libc
   qjs_libc_dep = declare_dependency(
-    include_directories: include_directories('.'),
+    include_directories: include_directories('src'),
     dependencies: qjs_dep,
   )
 else
@@ -234,7 +235,7 @@ else
   qjs_libc_dep = declare_dependency(
     link_with: qjs_libc_lib,
     # Pick up quickjs-libc.h.
-    include_directories: include_directories('.'),
+    include_directories: include_directories('src'),
   )
 endif
 
@@ -304,7 +305,7 @@ endif
 
 # QuickJS bytecode compiler
 qjsc_srcs = files(
-  'qjsc.c',
+  'src/qjsc.c',
 )
 qjsc_exe = executable(
   'qjsc',
@@ -328,7 +329,7 @@ endif
 qjs_exe_srcs = files(
   'gen/repl.c',
   'gen/standalone.c',
-  'qjs.c',
+  'src/qjs.c',
 )
 qjs_exe = executable(
   'qjs',
@@ -414,7 +415,7 @@ if tests.allowed()
     # Test262 runner
     run262_exe = executable(
       'run-test262',
-      'run-test262.c',
+      'src/run-test262.c',
 
       c_args: qjs_c_args,
       dependencies: [qjs_dep, qjs_libc_dep]
@@ -515,7 +516,7 @@ if tests.allowed()
     'api',
     executable(
       'api-test',
-      'api-test.c',
+      'src/api-test.c',
 
       c_args: qjs_c_args,
       dependencies: [qjs_dep, qjs_libc_dep],
@@ -528,9 +529,9 @@ if tests.allowed()
     'lre',
     executable(
       'lre-test',
-      'lre-test.c',
-      'libregexp.c',
-      'libunicode.c',
+      'src/lre-test.c',
+      'src/libregexp.c',
+      'src/libunicode.c',
 
       c_args: qjs_c_args,
       build_by_default: false,
@@ -554,18 +555,18 @@ endif
 # Unicode generator
 unicode_gen = executable(
   'unicode_gen',
-  'unicode_gen.c',
+  'src/unicode_gen.c',
 
   c_args: qjs_c_args,
   build_by_default: false,
 )
 
 run_target(
-  'libunicode-table.h',
+  'src/libunicode-table.h',
   command: [
     unicode_gen,
     meson.current_source_dir() / 'unicode',
-    files('libunicode-table.h'),
+    files('src/libunicode-table.h'),
   ],
 )
 
@@ -641,7 +642,7 @@ alias_target('codegen',
       qjsc_exe,
       '-C',
       '-ss',
-      '-o', files('builtin-array-fromasync.h'),
+      '-o', files('src/builtin-array-fromasync.h'),
       '-n', 'builtin-array-fromasync.js',
       files('builtin-array-fromasync.js'),
     ],

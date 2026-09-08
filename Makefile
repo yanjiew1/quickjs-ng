@@ -48,14 +48,14 @@ all: $(QJS)
 amalgam: TEMP := $(shell mktemp -d)
 amalgam: $(QJS)
 	$(QJS) amalgam.js $(TEMP)/quickjs-amalgam.c
-	cp quickjs.h quickjs-libc.h $(TEMP)
+	cp src/quickjs.h src/quickjs-libc.h $(TEMP)
 	cd $(TEMP) && zip -9 quickjs-amalgam.zip quickjs-amalgam.c quickjs.h quickjs-libc.h
 	cp $(TEMP)/quickjs-amalgam.zip $(BUILD_DIR)
 	cd $(TEMP) && $(RM) quickjs-amalgam.zip quickjs-amalgam.c quickjs.h quickjs-libc.h
 	$(RM) -d $(TEMP)
 
 fuzz:
-	clang -g -O1 -fsanitize=address,undefined,fuzzer -o fuzz fuzz.c
+	clang -g -O1 -fsanitize=address,undefined,fuzzer -Isrc -o fuzz src/fuzz.c
 	./fuzz
 
 $(BUILD_DIR):
@@ -80,9 +80,9 @@ codegen: $(QJSC)
 	$(QJSC) -e -o gen/hello.c examples/hello.js
 	$(QJSC) -e -o gen/hello_module.c -m examples/hello_module.js
 	$(QJSC) -e -o gen/test_fib.c -m examples/test_fib.js
-	$(QJSC) -C -ss -o builtin-array-fromasync.h builtin-array-fromasync.js
-	$(QJSC) -C -ss -o builtin-iterator-zip.h builtin-iterator-zip.js
-	$(QJSC) -C -ss -o builtin-iterator-zip-keyed.h builtin-iterator-zip-keyed.js
+	$(QJSC) -C -ss -o src/builtin-array-fromasync.h builtin-array-fromasync.js
+	$(QJSC) -C -ss -o src/builtin-iterator-zip.h builtin-iterator-zip.js
+	$(QJSC) -C -ss -o src/builtin-iterator-zip-keyed.h builtin-iterator-zip-keyed.js
 
 debug:
 	BUILD_TYPE=Debug $(MAKE)
@@ -93,34 +93,35 @@ distclean:
 stats: $(QJS)
 	$(QJS) -qd
 
-jscheck: CFLAGS=-I. -D_GNU_SOURCE -DJS_CHECK_JSVALUE -Wall -Werror -fsyntax-only -c -o /dev/null
+jscheck: CFLAGS=-I. -Isrc -D_GNU_SOURCE -DJS_CHECK_JSVALUE -Wall -Werror -fsyntax-only -c -o /dev/null
 jscheck:
-	$(CC) $(CFLAGS) api-test.c
-	$(CC) $(CFLAGS) ctest.c
-	$(CC) $(CFLAGS) fuzz.c
+	$(CC) $(CFLAGS) src/api-test.c
+	$(CC) $(CFLAGS) src/ctest.c
+	$(CC) $(CFLAGS) src/fuzz.c
 	$(CC) $(CFLAGS) gen/function_source.c
 	$(CC) $(CFLAGS) gen/hello.c
 	$(CC) $(CFLAGS) gen/hello_module.c
 	$(CC) $(CFLAGS) gen/repl.c
 	$(CC) $(CFLAGS) gen/standalone.c
 	$(CC) $(CFLAGS) gen/test_fib.c
-	$(CC) $(CFLAGS) qjs.c
-	$(CC) $(CFLAGS) qjsc.c
-	$(CC) $(CFLAGS) quickjs-libc.c
-	$(CC) $(CFLAGS) quickjs.c
-	$(CC) $(CFLAGS) run-test262.c
+	$(CC) $(CFLAGS) src/qjs.c
+	$(CC) $(CFLAGS) src/qjsc.c
+	$(CC) $(CFLAGS) src/quickjs-libc.c
+	$(CC) $(CFLAGS) src/quickjs.c
+	$(CC) $(CFLAGS) src/quickjs-version.c
+	$(CC) $(CFLAGS) src/run-test262.c
 
 # effectively .PHONY because it doesn't generate output
 ctest: CFLAGS=-std=c11 -fsyntax-only -Wall -Wextra -Werror -pedantic
-ctest: ctest.c quickjs.h
-	$(CC) $(CFLAGS) -DJS_NAN_BOXING=0 $<
-	$(CC) $(CFLAGS) -DJS_NAN_BOXING=1 $<
+ctest: src/ctest.c src/quickjs.h
+	$(CC) $(CFLAGS) -Isrc -DJS_NAN_BOXING=0 $<
+	$(CC) $(CFLAGS) -Isrc -DJS_NAN_BOXING=1 $<
 
 # effectively .PHONY because it doesn't generate output
 cxxtest: CXXFLAGS=-std=c++11 -fsyntax-only -Wall -Wextra -Werror -pedantic
-cxxtest: cxxtest.cc quickjs.h
-	$(CXX) $(CXXFLAGS) -DJS_NAN_BOXING=0 $<
-	$(CXX) $(CXXFLAGS) -DJS_NAN_BOXING=1 $<
+cxxtest: cxxtest.cc src/quickjs.h
+	$(CXX) $(CXXFLAGS) -Isrc -DJS_NAN_BOXING=0 $<
+	$(CXX) $(CXXFLAGS) -Isrc -DJS_NAN_BOXING=1 $<
 
 test: $(QJS)
 	$(RUN262) -c tests.conf
@@ -143,7 +144,7 @@ microbench: $(QJS)
 unicode_gen: $(BUILD_DIR)
 	cmake --build $(BUILD_DIR) --target unicode_gen
 
-libunicode-table.h: unicode_gen
+src/libunicode-table.h: unicode_gen
 	$(BUILD_DIR)/unicode_gen unicode $@
 
 .PHONY: all amalgam ctest cxxtest debug fuzz jscheck install clean codegen distclean stats test test262 test262-update test262-check microbench unicode_gen $(QJS) $(QJSC)

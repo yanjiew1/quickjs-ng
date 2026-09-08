@@ -89,19 +89,6 @@
 
 #define check_dump_flag(rt, flag)  ((rt->dump_flags & (flag +0)) == (flag +0))
 
-#define STRINGIFY_(x) #x
-#define STRINGIFY(x)  STRINGIFY_(x)
-
-#define QJS_VERSION_STRING \
-    STRINGIFY(QJS_VERSION_MAJOR) "." STRINGIFY(QJS_VERSION_MINOR) "." STRINGIFY(QJS_VERSION_PATCH) QJS_VERSION_SUFFIX
-
-const char* JS_GetVersion(void) {
-    return QJS_VERSION_STRING;
-}
-
-#undef STRINFIGY_
-#undef STRINGIFY
-
 static inline JSValueConst *vc(JSValue *vals)
 {
     return (JSValueConst *)vals;
