@@ -218,8 +218,8 @@ jobs:
           arch: ${{ matrix.config.vsArch }}
       - name: cxxtest
         run: |
-          cl.exe /DJS_NAN_BOXING=0 /Zs cxxtest.cc
-          cl.exe /DJS_NAN_BOXING=1 /Zs cxxtest.cc
+          cl.exe /DJS_NAN_BOXING=0 /Zs src/cxxtest.cc
+          cl.exe /DJS_NAN_BOXING=1 /Zs src/cxxtest.cc
 
   windows-clang:
     runs-on: windows-latest
@@ -243,8 +243,8 @@ jobs:
           build\qjs.exe -qd
       - name: cxxtest
         run: |
-          clang.exe -D JS_NAN_BOXING=0 -fsyntax-only cxxtest.cc
-          clang.exe -D JS_NAN_BOXING=1 -fsyntax-only cxxtest.cc
+          clang.exe -D JS_NAN_BOXING=0 -fsyntax-only src/cxxtest.cc
+          clang.exe -D JS_NAN_BOXING=1 -fsyntax-only src/cxxtest.cc
       - name: test
         run: |
           cp build\fib.dll examples\
@@ -272,8 +272,8 @@ jobs:
           build\${{matrix.buildType}}\qjs.exe -qd
       - name: cxxtest
         run: |
-          clang-cl.exe /DJS_NAN_BOXING=0 /Zs cxxtest.cc
-          clang-cl.exe /DJS_NAN_BOXING=1 /Zs cxxtest.cc
+          clang-cl.exe /DJS_NAN_BOXING=0 /Zs src/cxxtest.cc
+          clang-cl.exe /DJS_NAN_BOXING=1 /Zs src/cxxtest.cc
       - name: test
         run: |
           cp build\${{matrix.buildType}}\fib.dll examples\
@@ -628,7 +628,7 @@ jobs:
       - name: build amalgamation
         run: |
           unzip -d "$RUNNER_TEMP" build/quickjs-amalgam.zip
-          cc -Wall -I. -o "$RUNNER_TEMP/run-test262.o" -c run-test262.c
+          cc -Wall -I. -Isrc -o "$RUNNER_TEMP/run-test262.o" -c src/run-test262.c
           cc -Wall -I/ -DQJS_BUILD_LIBC -o "$RUNNER_TEMP/quickjs-amalgam.o" -c "$RUNNER_TEMP/quickjs-amalgam.c"
           cc -o "$RUNNER_TEMP/run-test262" "$RUNNER_TEMP/run-test262.o" "$RUNNER_TEMP/quickjs-amalgam.o" -lm
       - name: test

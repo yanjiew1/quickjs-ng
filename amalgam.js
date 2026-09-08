@@ -1,22 +1,24 @@
 import {loadFile, writeFile} from "qjs:std"
 
-const cutils_h = loadFile("cutils.h")
-const dtoa_c = loadFile("dtoa.c")
-const dtoa_h = loadFile("dtoa.h")
-const libregexp_c = loadFile("libregexp.c")
-const libregexp_h = loadFile("libregexp.h")
-const libregexp_opcode_h = loadFile("libregexp-opcode.h")
-const libunicode_c = loadFile("libunicode.c")
-const libunicode_h = loadFile("libunicode.h")
-const libunicode_table_h = loadFile("libunicode-table.h")
-const list_h = loadFile("list.h")
-const quickjs_atom_h = loadFile("quickjs-atom.h")
-const quickjs_c = loadFile("quickjs.c")
-const quickjs_c_atomics_h = loadFile("quickjs-c-atomics.h")
-const quickjs_h = loadFile("quickjs.h")
-const quickjs_libc_c = loadFile("quickjs-libc.c")
-const quickjs_libc_h = loadFile("quickjs-libc.h")
-const quickjs_opcode_h = loadFile("quickjs-opcode.h")
+const cutils_h = loadFile("src/cutils.h")
+const dtoa_c = loadFile("src/dtoa.c")
+const dtoa_h = loadFile("src/dtoa.h")
+const libregexp_c = loadFile("src/libregexp.c")
+const libregexp_h = loadFile("src/libregexp.h")
+const libregexp_opcode_h = loadFile("src/libregexp-opcode.h")
+const libunicode_c = loadFile("src/libunicode.c")
+const libunicode_h = loadFile("src/libunicode.h")
+const libunicode_table_h = loadFile("src/libunicode-table.h")
+const list_h = loadFile("src/list.h")
+const quickjs_atom_h = loadFile("src/quickjs-atom.h")
+const quickjs_compiler_c = loadFile("src/quickjs-compiler.c")
+const quickjs_serialize_c = loadFile("src/quickjs-serialize.c")
+const quickjs_runtime_c = loadFile("src/quickjs-runtime.c")
+const quickjs_c_atomics_h = loadFile("src/quickjs-c-atomics.h")
+const quickjs_h = loadFile("src/quickjs.h")
+const quickjs_libc_c = loadFile("src/quickjs-libc.c")
+const quickjs_libc_h = loadFile("src/quickjs-libc.h")
+const quickjs_opcode_h = loadFile("src/quickjs-opcode.h")
 const gen_builtin_array_fromasync_h = loadFile("builtin-array-fromasync.h")
 const gen_builtin_iterator_zip_h = loadFile("builtin-iterator-zip.h")
 const gen_builtin_iterator_zip_keyed_h = loadFile("builtin-iterator-zip-keyed.h")
@@ -32,7 +34,9 @@ let source = "#if defined(QJS_BUILD_LIBC) && defined(__linux__) && !defined(_GNU
            + libregexp_h
            + libunicode_table_h
            + quickjs_h
-           + quickjs_c
+           + quickjs_compiler_c
+           + quickjs_serialize_c
+           + quickjs_runtime_c
            + dtoa_c
            + libregexp_c
            + libunicode_c
